@@ -201,9 +201,33 @@ func (l *Live) GetInfo() (info *live.Info, err error) {
 		} else {
 			return nil, err
 		}
-
 	}
-	resp, err := l.RequestSession.Get(fmt.Sprintf("%s/%s", liveInfoUrl, l.roomID), live.CommonUserAgent)
+	
+	// 尝试使用新的API地址获取直播间信息
+	newLiveInfoUrl := "https://open.douyucdn.cn/api/RoomApi/room/" + l.roomID
+	resp, err := l.RequestSession.Get(newLiveInfoUrl, live.CommonUserAgent)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		body, err := resp.Bytes()
+		if err == nil {
+			// 检查返回码
+			if gjson.GetBytes(body, "error").Int() == 0 {
+				info = &live.Info{
+					Live:         l,
+					HostName:     gjson.GetBytes(body, "data.owner_name").String(),
+					RoomName:     gjson.GetBytes(body, "data.room_name").String(),
+					Status:       gjson.GetBytes(body, "data.show_status").Int() == 1 && gjson.GetBytes(body, "data.videoLoop").Int() == 0,
+					CustomLiveId: "douyu/" + l.roomID,
+				}
+				// 检查获取的信息是否完整
+				if info.HostName != "" && info.RoomName != "" {
+					return info, nil
+				}
+			}
+		}
+	}
+	
+	// 如果新API失败，尝试使用旧API
+	resp, err = l.RequestSession.Get(fmt.Sprintf("%s/%s", liveInfoUrl, l.roomID), live.CommonUserAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -214,11 +238,46 @@ func (l *Live) GetInfo() (info *live.Info, err error) {
 	if err != nil {
 		return nil, err
 	}
+	
+	// 尝试多种JSON路径提取主播名称和直播间名称
+	hostName := gjson.GetBytes(body, "room.owner_name").String()
+	if hostName == "" {
+		hostName = gjson.GetBytes(body, "owner_name").String()
+	}
+	if hostName == "" {
+		hostName = gjson.GetBytes(body, "data.owner_name").String()
+	}
+	
+	roomName := gjson.GetBytes(body, "room.room_name").String()
+	if roomName == "" {
+		roomName = gjson.GetBytes(body, "room_name").String()
+	}
+	if roomName == "" {
+		roomName = gjson.GetBytes(body, "data.room_name").String()
+	}
+	
+	// 提取直播状态
+	showStatus := gjson.GetBytes(body, "room.show_status").Int()
+	if showStatus == 0 {
+		showStatus = gjson.GetBytes(body, "show_status").Int()
+	}
+	if showStatus == 0 {
+		showStatus = gjson.GetBytes(body, "data.show_status").Int()
+	}
+	
+	videoLoop := gjson.GetBytes(body, "room.videoLoop").Int()
+	if videoLoop == 0 {
+		videoLoop = gjson.GetBytes(body, "videoLoop").Int()
+	}
+	if videoLoop == 0 {
+		videoLoop = gjson.GetBytes(body, "data.videoLoop").Int()
+	}
+	
 	info = &live.Info{
 		Live:         l,
-		HostName:     gjson.GetBytes(body, "room.owner_name").String(),
-		RoomName:     gjson.GetBytes(body, "room.room_name").String(),
-		Status:       gjson.GetBytes(body, "room.show_status").Int() == 1 && gjson.GetBytes(body, "room.videoLoop").Int() == 0,
+		HostName:     hostName,
+		RoomName:     roomName,
+		Status:       showStatus == 1 && videoLoop == 0,
 		CustomLiveId: "douyu/" + l.roomID,
 	}
 	return info, nil

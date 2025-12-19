@@ -31,20 +31,120 @@ var downloaderHeadersForLol = func() map[string]string {
 func GetInfo_ForLol(l *Live, body string) (info *live.Info, err error) {
 	var (
 		strFilter = utils.NewStringFilterChain(utils.ParseUnicode, utils.UnescapeHTMLEntity)
-		hostName  = strFilter.Do(utils.Match1(`"nick":"([^"]*)"`, body))
-		roomName  = strFilter.Do(utils.Match1(`"introduction":"([^"]*)"`, body))
-		status    = strFilter.Do(utils.Match1(`"isOn":([^,]*),`, body))
+		hostName  string
+		roomName  string
+		status    string
 	)
 
+	// 尝试多种正则表达式匹配主播名称
+	hostNamePatterns := []string{
+		`"nick":"([^"]*)"`,
+		`"userName":"([^"]*)"`,
+		`"nickName":"([^"]*)"`,
+		`"anchorName":"([^"]*)"`,
+		`"sNickName":"([^"]*)"`,
+	}
+
+	// 尝试多种正则表达式匹配直播间名称
+	roomNamePatterns := []string{
+		`"introduction":"([^"]*)"`,
+		`"roomName":"([^"]*)"`,
+		`"title":"([^"]*)"`,
+		`"sRoomName":"([^"]*)"`,
+	}
+
+	// 尝试多种正则表达式匹配直播状态
+	statusPatterns := []string{
+		`"isOn":([^,]*),`,
+		`"liveStatus":([^,]*),`,
+		`"status":([^,]*),`,
+	}
+
+	// 匹配主播名称
+	for _, pattern := range hostNamePatterns {
+		if hostName = strFilter.Do(utils.Match1(pattern, body)); hostName != "" {
+			break
+		}
+	}
+
+	// 匹配直播间名称
+	for _, pattern := range roomNamePatterns {
+		if roomName = strFilter.Do(utils.Match1(pattern, body)); roomName != "" {
+			break
+		}
+	}
+
+	// 匹配直播状态
+	for _, pattern := range statusPatterns {
+		if status = strFilter.Do(utils.Match1(pattern, body)); status != "" {
+			break
+		}
+	}
+
+	// 如果基本正则匹配失败，尝试从JSON数据中提取
 	if hostName == "" || roomName == "" || status == "" {
+		// 尝试从HTML中提取JSON数据
+		jsonData := utils.Match1(`window\.HYLiveInfo\s*=\s*(\{.*?\});`, body)
+		if jsonData != "" {
+			gj := gjson.Parse(jsonData)
+			if hostName == "" {
+				hostName = gj.Get("nick").String()
+				if hostName == "" {
+					hostName = gj.Get("anchorInfo.nick").String()
+				}
+			}
+			if roomName == "" {
+				roomName = gj.Get("roomName").String()
+				if roomName == "" {
+					roomName = gj.Get("roomInfo.roomName").String()
+				}
+			}
+			if status == "" {
+				status = strconv.FormatBool(gj.Get("liveStatus").Int() == 1)
+				if status == "" {
+					status = strconv.FormatBool(gj.Get("isLiving").Bool())
+				}
+			}
+		}
+	}
+
+	if hostName == "" || roomName == "" || status == "" {
+		// 尝试从另一个可能的JSON位置提取
+		jsonData2 := utils.Match1(`window\.INIT_DATA\s*=\s*(\{.*?\});`, body)
+		if jsonData2 != "" {
+			gj := gjson.Parse(jsonData2)
+			if hostName == "" {
+				hostName = gj.Get("anchor.nick").String()
+			}
+			if roomName == "" {
+				roomName = gj.Get("room.roomName").String()
+			}
+			if status == "" {
+				status = strconv.FormatBool(gj.Get("room.liveStatus").Int() == 1)
+			}
+		}
+	}
+
+	// 最后尝试从页面标题中提取直播间名称
+	if roomName == "" {
+		roomName = strFilter.Do(utils.Match1(`<title>(.*?) - 虎牙直播</title>`, body))
+	}
+
+	if hostName == "" || roomName == "" {
 		return nil, live.ErrInternalError
+	}
+
+	// 确保status有一个合理的默认值
+	isLiving := false
+	if status == "true" || status == "1" || strings.ToLower(status) == "on" {
+		isLiving = true
 	}
 
 	info = &live.Info{
 		Live:     l,
 		HostName: hostName,
 		RoomName: roomName,
-		Status:   status == "true",
+		Status:   isLiving,
 	}
 	return info, nil
 }

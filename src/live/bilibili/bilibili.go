@@ -82,6 +82,57 @@ func (l *Live) GetInfo() (info *live.Info, err error) {
 	for _, item := range cookies {
 		cookieKVs[item.Name] = item.Value
 	}
+	
+	// 使用新的API地址获取直播间信息，包含主播名称
+	roomInfoUrl := "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom"
+	resp, err := l.RequestSession.Get(
+		roomInfoUrl,
+		live.CommonUserAgent,
+		requests.Query("room_id", l.realID),
+		requests.Cookies(cookieKVs),
+	)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, live.ErrRoomNotExist
+	}
+	body, err := resp.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	
+	// 检查返回码
+	if gjson.GetBytes(body, "code").Int() != 0 {
+		// 尝试使用旧API作为后备
+		return l.getInfoByOldApi()
+	}
+
+	// 从新API中获取信息
+	info = &live.Info{
+		Live:      l,
+		RoomName:  gjson.GetBytes(body, "data.room_info.title").String(),
+		HostName:  gjson.GetBytes(body, "data.anchor_info.base_info.uname").String(),
+		Status:    gjson.GetBytes(body, "data.room_info.live_status").Int() == 1,
+		AudioOnly: l.Options.AudioOnly,
+	}
+	
+	// 检查获取的信息是否完整
+	if info.HostName == "" || info.RoomName == "" {
+		// 尝试使用旧API作为后备
+		return l.getInfoByOldApi()
+	}
+	
+	return info, nil
+}
+
+// getInfoByOldApi 使用旧API获取直播间信息作为后备
+func (l *Live) getInfoByOldApi() (info *live.Info, err error) {
+	cookies := l.Options.Cookies.Cookies(l.Url)
+	cookieKVs := make(map[string]string)
+	for _, item := range cookies {
+		cookieKVs[item.Name] = item.Value
+	}
 	resp, err := l.RequestSession.Get(
 		roomApiUrl,
 		live.CommonUserAgent,
@@ -96,10 +147,7 @@ func (l *Live) GetInfo() (info *live.Info, err error) {
 		return nil, live.ErrRoomNotExist
 	}
 	body, err := resp.Bytes()
-	if err != nil {
-		return nil, err
-	}
-	if gjson.GetBytes(body, "code").Int() != 0 {
+	if err != nil || gjson.GetBytes(body, "code").Int() != 0 {
 		return nil, live.ErrRoomNotExist
 	}
 
@@ -115,13 +163,28 @@ func (l *Live) GetInfo() (info *live.Info, err error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		// 如果获取主播名称失败，尝试从roomApiUrl的响应中获取
+		info.HostName = gjson.GetBytes(body, "data.uname").String()
+		if info.HostName != "" {
+			return info, nil
+		}
 		return nil, live.ErrInternalError
 	}
 	body, err = resp.Bytes()
 	if err != nil {
+		// 如果获取主播名称失败，尝试从roomApiUrl的响应中获取
+		info.HostName = gjson.GetBytes(body, "data.uname").String()
+		if info.HostName != "" {
+			return info, nil
+		}
 		return nil, err
 	}
 	if gjson.GetBytes(body, "code").Int() != 0 {
+		// 如果获取主播名称失败，尝试从roomApiUrl的响应中获取
+		info.HostName = gjson.GetBytes(body, "data.uname").String()
+		if info.HostName != "" {
+			return info, nil
+		}
 		return nil, live.ErrInternalError
 	}
 
