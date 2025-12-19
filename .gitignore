@@ -176,3 +176,4 @@ coverage.txt
 *报告*.md
 .gitignore
 *.code-workspace
+.trae/rules/project_rules.md
